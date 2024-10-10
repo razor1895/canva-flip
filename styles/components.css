@@ -91,3 +91,14 @@
   border-radius: 8px !important;
   background-color: var(--ui-kit-color-neutral-low) !important;
 }
+
+.canvas {
+  align-items: center;
+  aspect-ratio: 4 / 3;
+  background-color: var(--ui-kit-color-neutral-low);
+  border: 1px solid var(--ui-kit-color-border);
+  border-radius: 4px;
+  display: flex;
+  justify-content: center;
+  overflow: hidden;
+}
