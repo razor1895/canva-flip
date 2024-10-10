@@ -1,404 +1,230 @@
-import {
-  Rows,
-  Text,
-  FileInput,
-  SegmentedControl,
-  Button,
-  ProgressBar,
-  Alert,
-  FormField,
-  FileInputItem,
-  Title,
-  Box,
-  ReloadIcon,
-  Badge,
-} from "@canva/app-ui-kit";
-import { useEffect, useMemo, useRef, useState } from "react";
-import type {
-  ContentDraft,
-  ImageRef,
-  ImageElementAtPoint
-} from "@canva/design";
-import { addElementAtPoint, selection } from "@canva/design";
-import { useMutation } from "@tanstack/react-query";
-import styles from "styles/components.css";
-import type { ImageMimeType } from "@canva/asset";
-import { getTemporaryUrl, upload } from "@canva/asset";
-import ReactCompareImage from "react-compare-image";
+import { Button, Rows, Text, Alert, Title, Slider } from "@canva/app-ui-kit";
+import type { ImageRef } from "@canva/design";
+import { requestExport, selection } from "@canva/design";
+import { useEffect, useState, useRef } from "react";
+import { getTemporaryUrl } from "@canva/asset";
 
-const maxImageSize = 2500 * 2500 * 2;
-async function fileToDataUrl(file: Blob) {
-  return new Promise<string>((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      resolve(reader.result as string);
-    };
-    reader.readAsDataURL(file);
-  });
-}
+import "../styles/components.css";
 
-async function getImagePixels(file: Blob) {
-  return new Promise<{ pixels: number; width: number; height: number }>(
-    (resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        resolve({
-          pixels: img.width * img.height,
-          width: img.width,
-          height: img.height,
-        });
-      };
-      img.src = URL.createObjectURL(file);
-    }
-  );
-}
+export const Caption = ({ children, selected, onClick }: { children: React.ReactNode, selected: boolean, onClick: () => void }) => {
+  const [hover, setIsHovered] = useState(false);
+  let bgColor = hover ? 'rgba(64,87,109,.07)' : 'transparent';
 
-async function readCanvaNativeImageURL(url: string): Promise<File> {
-  const res = await fetch(url);
-  const formatMatch = url.match(/format:([A-Z]+)/);
-  const ext = formatMatch ? formatMatch[1].toLowerCase() : "png";
-  return new File([await res.blob()], `selected-image.${ext}`, {
-    type: `image/${ext}`,
-  });
+  if (selected) {
+    bgColor = 'rgba(57,76,96,.15)';
+  }
+
+  return (
+    <div
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      onClick={onClick}
+      style={{
+        display: 'inline-flex',
+        transition: 'background-color .1s linear,border-color .1s linear,color .1s linear',
+        color: '#0d1216',
+        justifyContent: 'center',
+        alignItems: 'center',
+        height: 32,
+        padding: '0 8px',
+        outline: 'none',
+        cursor: 'pointer',
+        maxWidth: '100%',
+        verticalAlign: 'middle',
+        backgroundColor: bgColor,
+        borderRadius: 8,
+        boxSizing: 'border-box',
+        border: '2px solid transparent',
+        fontSize: '14px',
+        fontWeight: selected ? 600 : 400,
+        minWidth: 80
+      }}
+    >
+      {children}
+    </div>
+  )
 }
 
 export const App = () => {
-  const [[file], setFiles] = useState<File[]>([]);
-  const [imageSourceType, setImageSourceType] = useState<
-    "upload" | "content" | "unknown"
-  >("unknown");
-  const [contentDraft, setContentDraft] = useState<ContentDraft<{
-    ref: ImageRef;
-  }> | null>(null);
-  const [enlargeFactor, setEnlargeFactor] = useState("2");
-  const [originImageURL, setOriginImageURL] = useState("");
-  const [imagePixels, setImagePixels] = useState(0);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [hasSelect, setHasSelect] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<ImageRef | undefined>();
+  const [imageAdded, setImageIsAdded] = useState(false);
+  const [url, setUrl] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [selectedFlip, setSelectedFlip] = useState<'horizontal' | 'vertical' | 'both' | ''>('');
+  const canvasRef = useRef<HTMLCanvasElement>(null); // Reference to the canvas
+  const [opacity, setOpacity] = useState<number>(); // undefined value to avoid set opa
 
-  const {
-    data: enlargedData,
-    mutateAsync,
-    isPending: uploading,
-    error: processImageError,
-    reset: resetProcessImage,
-  } = useMutation({
-    mutationFn: async ({
-      file,
-      enlargeFactor,
-    }: {
-      file: File;
-      enlargeFactor: string;
-    }) => {
-      const body = new FormData();
-      body.append("file", file);
-      body.append("enlarge_actor", enlargeFactor);
-      setUploadProgress(0);
-      const interval = setInterval(() => {
-        setUploadProgress((prev) => {
-          if (prev === 75) {
-            clearInterval(interval);
-            return prev;
-          }
-          return Math.min(prev + 1, 75);
-        });
-      }, 200);
-
+  /* Function Area Start */
+  const createFlip = async () => {
+    if (selectedImage) {
       try {
-        const res = await fetch(`${BACKEND_HOST}/enlarge`, {
-          // send form data via multipart/form-data
-          method: "POST",
-          body,
+        // get the temporary URL
+        const { url: temporaryUrl } = await getTemporaryUrl({
+          ref: selectedImage,
+          type: 'image',
         });
-
-        setUploadProgress(100);
-
-        if (res.status !== 200) {
-          if (res.status === 500) {
-            throw new Error("Server error, please try again");
-          }
-          if (res.status === 504 || res.status === 524) {
-            throw new Error("Request timeout, please try again");
-          }
-
-          if (res.status === 413) {
-            throw new Error(
-              "Image too large, please replace with a smaller image"
-            );
-          }
-          throw new Error("Failed to process image:" + res.statusText);
-        }
-        const file2 = new File([await res.blob()], file.name, {
-          type: 'image/png',
-        });
-        return { url: await fileToDataUrl(file2), file: file2 };
-      } catch (e) {
-        if (e instanceof Error && e.message === "Failed to fetch") {
-          throw new Error("Failed to connect to server, please try again");
-        }
+        setUrl(temporaryUrl);
+        setImageIsAdded(true);
+      } catch (error) {
+        setErrorMsg('Failed to get temporary URL');
       }
-    },
-  });
-  const enlargedUrl = enlargedData?.url;
-
-  const stateRef = useRef({ imageSourceType, uploading, enlargedUrl });
-
-  stateRef.current = {
-    imageSourceType,
-    uploading,
-    enlargedUrl,
+    } else {
+      setImageIsAdded(false);
+    }
   };
 
+  const reset = () => {
+    setSelectedFlip('');
+    setOpacity(1);
+  }
+
+  // download the canvas image
+  const download = () => {
+    if (canvasRef.current) {
+      const canvas = canvasRef.current;
+      const image = canvas.toDataURL("image/png");
+      const link = document.createElement("a");
+      link.download = "image.png";
+      link.href = image;
+      // Append the link to the document
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+  }
+  /* Function Area End */
+
+  /* Effect Area Start */
   useEffect(() => {
-    return selection.registerOnChange({
+    // Register a callback that runs when the selection changes
+    // This will run when the user selects one or more images
+    selection.registerOnChange({
       scope: "image",
-      async onChange(event) {
-        const draft = await event.read();
-        const ref = draft.contents[0]?.ref;
-        setHasSelect(!!ref);
-        const { imageSourceType, enlargedUrl, uploading } = stateRef.current;
-        if (imageSourceType === "upload" || enlargedUrl || uploading) {
-          return;
-        }
-
-        setContentDraft(draft);
-        if (ref) {
-          setImageSourceType("content");
-          const { url } = await getTemporaryUrl({
-            type: 'image',
-            ref,
-          });
-
-          const file = await readCanvaNativeImageURL(url);
-          setFiles([file]);
-        } else if (imageSourceType === "content" && !uploading) {
-          resetData();
+      onChange: async (event) => {
+        if (event.count > 0) {
+          const selection = await event.read();
+          // we only accept one image
+          setSelectedImage(selection.contents[0].ref);
+        } else {
+          // if user cancels selection
+          setSelectedImage(undefined);
         }
       },
     });
   }, []);
 
   useEffect(() => {
-    if (!file || !FileReader) {
-      return;
-    }
+    if (url && canvasRef.current) {
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext("2d");
+  
+      if (ctx) {
+        const image = new Image();
+        image.crossOrigin = "Anonymous";  // Allow cross-origin image loading
+        image.src = url;
+        image.onload = () => {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+          // Save the current state before applying transformations
+          ctx.save();
 
-    fileToDataUrl(file).then(setOriginImageURL);
-    getImagePixels(file).then(({ pixels }) => setImagePixels(pixels));
-  }, [file]);
-
-  const {
-    mutate: acceptImage,
-    reset: resetAcceptImage,
-    data: acceptResult,
-    error
-  } = useMutation({
-    mutationKey: [],
-    mutationFn: async ({enlargedUrl, file, hasSelect}: {
-      enlargedUrl: string,
-      file: File,
-      hasSelect: boolean
-    }) => {
-      if (
-        contentDraft?.contents.length &&
-        imageSourceType === "content" && hasSelect) {
-        const asset = await upload({
-          type: 'image',
-          url: enlargedUrl,
-          thumbnailUrl: enlargedUrl,
-          mimeType: 'image/png' as ImageMimeType,
-          parentRef: contentDraft.contents[0].ref,
-          aiDisclosure: 'app_generated'
-        });
-
-        contentDraft.contents[0].ref = asset.ref;
-        await contentDraft.save();
-        return "replaced";
-      } else {
-        await addElementAtPoint({
-          type: 'image',
-          dataUrl: enlargedUrl,
-        } as ImageElementAtPoint);
-        return "added";
+          // set the opacity
+          ctx.globalAlpha = typeof opacity === 'number' ? opacity : 1;
+  
+          // Set the transform based on selectedFlip
+          switch (selectedFlip) {
+            case 'horizontal':
+              ctx.scale(-1, 1); // Flip horizontally
+              ctx.drawImage(image, -canvas.width, 0, canvas.width, canvas.height); // Adjust position
+              break;
+            case 'vertical':
+              ctx.scale(1, -1); // Flip vertically
+              ctx.drawImage(image, 0, -canvas.height, canvas.width, canvas.height); // Adjust position
+              break;
+            case 'both':
+              ctx.scale(-1, -1); // Flip both horizontally and vertically
+              ctx.drawImage(image, -canvas.width, -canvas.height, canvas.width, canvas.height); // Adjust position
+              break;
+            default:
+              ctx.drawImage(image, 0, 0, canvas.width, canvas.height); // No flip, default case
+          }
+  
+          // Restore the context state
+          ctx.restore();
+        };
+  
+        image.onerror = () => {
+          setErrorMsg("Failed to load image");
+        };
       }
-    },
-  });
-
-  const enlargeFactorOptions = useMemo(() => {
-    return [
-      { value: "2", label: "2X", disabled: imagePixels * 2 > maxImageSize },
-      { value: "3", label: "3X", disabled: imagePixels * 3 > maxImageSize },
-      { value: "4", label: "4X", disabled: imagePixels * 4 > maxImageSize },
-      { value: "8", label: "8X", disabled: imagePixels * 8 > maxImageSize },
-    ];
-  }, [originImageURL, imagePixels]);
-
-  const resetData = () => {
-    setFiles([]);
-    setEnlargeFactor("2");
-    setOriginImageURL("");
-    resetProcessImage();
-    setImageSourceType("unknown");
-    resetAcceptImage();
-  };
-
-  const isPixelExceeded = enlargeFactorOptions.every(
-    (option) => option.disabled
-  );
-
-  const isFileExceeded = file?.size > 1024 * 1024 * 5; // 5MB
-
-  if (uploading) {
-    return (
-      <Box
-        flexDirection="column"
-        alignItems="center"
-        justifyContent="center"
-        display="flex"
-        className={styles.scrollContainer}
-        paddingEnd="2u"
-      >
-        <Rows spacing="2u">
-          <Title size="small" alignment="center">
-            Generating your image
-          </Title>
-          <ProgressBar value={uploadProgress} />
-          <Text alignment="center" size="small" tone="tertiary">
-            Please wait, this should only take a few moments
-          </Text>
-          <Button onClick={resetData} variant="secondary">
-            Cancel
-          </Button>
-        </Rows>
-      </Box>
-    );
-  }
+    }
+  }, [url, selectedFlip, opacity]);
+  /* Effect Area End */
 
   return (
-    <div className={styles.scrollContainer}>
-      {enlargedUrl ? (
+    <div className="scrollContainer" style={{ padding: `16px 12px` }}>
+      <Rows spacing="2u">
+        {errorMsg && <Alert tone="critical">{errorMsg}</Alert>}
+      </Rows>
+      {imageAdded && (
+        <>
+          <div
+            id="canvas"
+            style={{
+              alignItems: "center",
+              aspectRatio: "4 / 3",
+              backgroundColor: "var(--ui-kit-color-neutral-low)",
+              border: "1px solid var(--ui-kit-color-border)",
+              borderRadius: 4,
+              display: "flex",
+              justifyContent: "center",
+              overflow: "hidden",
+            }}
+          >
+            <canvas ref={canvasRef} style={{ width: "92%", height: "92%" }} />
+          </div>
+          <div style={{ marginTop: '16px', marginBottom: '8px' }}>
+            <Title size="small">Flip</Title>
+          </div>
+          <div
+            style={{
+              alignItems: 'center',
+              border: '1px solid var(--ui-kit-color-border)',
+              justifyContent: 'space-between',
+              borderRadius: 4,
+              boxSizing: 'border-box',
+              display: 'flex',
+              height: 40,
+              outlineOffset: 2,
+              padding: 4,
+            }}
+          >
+            <Caption selected={selectedFlip === 'horizontal'} onClick={() => setSelectedFlip('horizontal')}>Horizontal</Caption>
+            <Caption selected={selectedFlip === 'vertical'} onClick={() => setSelectedFlip('vertical')}>Vertical</Caption>
+            <Caption selected={selectedFlip === 'both'} onClick={() => setSelectedFlip('both')}>Both</Caption>
+          </div>
+          <div style={{ marginTop: '16px', marginBottom: '8px' }}>
+            <Title size="small">Opacity</Title>
+          </div>
+          <Slider defaultValue={1} step={0.01} min={0} max={1} onChange={(value) => setOpacity(value)} />
+          <div style={{ marginTop: '16px' }}>
+            <Button variant="primary" onClick={reset} stretch>
+              Reset
+            </Button>
+          </div>
+          <div style={{ marginTop: '16px' }}>
+            <Button variant="primary" onClick={download} stretch>
+              Download
+            </Button>
+          </div>
+        </>
+      )}
+      {!imageAdded && (
         <Rows spacing="2u">
-          <>
-            <Rows spacing="1u">
-              {!!acceptResult && (
-                <Alert tone="positive"
-                onDismiss={resetAcceptImage}
-                >
-                  <Text variant="bold">
-                    {acceptResult === "added"
-                      ? "Image added to design"
-                      : "Image replaced"}
-                  </Text>
-                </Alert>
-              )}
-
-              <Text variant="bold" size="medium">
-                Preview
-              </Text>
-
-              <div className={styles.imageCompareContainer}>
-                <ReactCompareImage
-                  sliderLineColor=""
-                  leftImage={originImageURL}
-                  rightImage={enlargedUrl}
-                  leftImageLabel={<Badge tone="contrast" text="Before" />}
-                  rightImageLabel={<Badge tone="contrast" text="After" />}
-                />
-              </div>
-            </Rows>
-
-            <Rows spacing="1u">
-              <Button
-                variant="primary"
-                onClick={() => acceptImage({ enlargedUrl, file, hasSelect })}
-              >
-                {imageSourceType === "upload" || !hasSelect
-                  ? "Add to design"
-                  : "Replace"}
-              </Button>
-              <Button variant="secondary" onClick={resetData} icon={ReloadIcon}>
-                Go back
-              </Button>
-            </Rows>
-          </>
-        </Rows>
-      ) : (
-        <Rows spacing="2u">
-          <>
-            <FormField
-              description={
-                originImageURL
-                  ? ""
-                  : "Upload an image or select one in your design to enlarge"
-              }
-              label="Original image"
-              control={(props) =>
-                originImageURL ? (
-                  <>
-                    {/* eslint-disable-next-line react/forbid-elements */}
-                    <img src={originImageURL} className={styles.originImage} />
-
-                    {imageSourceType === "upload" && (
-                      <FileInputItem
-                        onDeleteClick={() => {
-                          resetData();
-                        }}
-                        label={file?.name}
-                      />
-                    )}
-                  </>
-                ) : (
-                  <FileInput
-                    {...props}
-                    accept={[
-                      "image/png",
-                      "image/jpeg",
-                      "image/jpg",
-                      "image/webp",
-                    ]}
-                    stretchButton
-                    onDropAcceptedFiles={(files) => {
-                      setImageSourceType("upload");
-                      setFiles(files);
-                    }}
-                  />
-                )
-              }
-            />
-
-            {!!file && (
-              <FormField
-                error={
-                  (isPixelExceeded || isFileExceeded) &&
-                  "This File is too large.Please choose one that's smaller than 2500px x 2500px or 5MB."
-                }
-                label="Scale amount"
-                control={(props) => (
-                  <SegmentedControl
-                    {...props}
-                    defaultValue="2"
-                    value={enlargeFactor}
-                    onChange={setEnlargeFactor}
-                    options={enlargeFactorOptions}
-                  />
-                )}
-              />
-            )}
-            {!!file && (
-              <Button
-                stretch
-                variant="primary"
-                type="submit"
-                disabled={!file}
-                onClick={() => mutateAsync({ file, enlargeFactor })}
-              >
-                Generate
-              </Button>
-            )}
-            {processImageError && (
-              <Alert tone="critical">{processImageError.message}</Alert>
-            )}
-          </>
+          <Text>Select an image in your design.</Text>
+          <Button variant="primary" disabled={!selectedImage} onClick={createFlip} stretch>
+            Create Flip!
+          </Button>
         </Rows>
       )}
     </div>
